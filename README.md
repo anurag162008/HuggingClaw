@@ -1,37 +1,41 @@
 # DivyaOS
 
-DivyaOS is an AI-native operating environment on Linux.
+DivyaOS is an AI-native operating environment on Linux with chat-first control.
 
-## Completed modules
-- User Interface: React + Tauri shell with Chat, File Explorer, Dashboard, Floating Assistant.
-- AI Core: ModelManager + Planner + Executor + Orchestrator workflow.
-- Tool System: modular tools for files, terminal, apps, browser, clipboard, notifications.
-- DivyaFS: `/divya/{files,memory,logs,projects}` + SQLite metadata + FAISS hooks.
-- System Layer: Linux process, shell, app control integration.
+## What is now complete
+- ✅ FastAPI backend with orchestration and modular tool execution
+- ✅ AI action format (`thought`, `action`, `args`) across planner/model/executor
+- ✅ Tool system: file, terminal, app control, browser, clipboard, notifications
+- ✅ DivyaFS primitives with SQLite metadata and FAISS hooks
+- ✅ Memory: short-term (session) + persistent long-term
+- ✅ Tracking + action logs
+- ✅ Automation engine (time and event triggers)
+- ✅ Plugin loading with sample plugin (`echo_plugin`)
+- ✅ React + Tauri GUI shell with Chat, File Explorer, Dashboard, Floating Assistant
 
 ## API
+- `GET /healthz`
+- `GET /readyz`
+- `GET /launch-check`
 - `POST /chat`
 - `POST /workflow`
 - `POST /execute`
 - `GET /tools`
 
-## Run backend
+## Launch backend
 ```bash
 pip install -r backend/requirements.txt
 uvicorn backend.main:app --reload
 ```
 
-## Workflow
-1. Parse intent
-2. Create plan
-3. Execute tools (with permission checks)
-4. Update memory
-5. Return result
-
-## Safety
-- Structured AI action format:
-```json
-{"thought":"...","action":"tool_name","args":{}}
+## Launch GUI
+```bash
+cd gui
+npm install
+npm run dev
 ```
-- Dangerous actions require `confirm_dangerous=true`.
-- Action logs written to `/divya/logs/actions.jsonl`.
+
+## Production safety
+- Dangerous operations require `confirm_dangerous=true`.
+- All actions are logged to `/divya/logs/actions.jsonl`.
+- Run readiness checks before launch: `/readyz` and `/launch-check`.
