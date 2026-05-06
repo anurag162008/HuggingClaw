@@ -3,10 +3,12 @@ import hashlib
 import sqlite3
 import numpy as np
 import faiss
+from backend.core.config import settings
+
 
 class DivyaFS:
-    def __init__(self, root: str = "/divya"):
-        self.root = Path(root)
+    def __init__(self, root: str | None = None):
+        self.root = Path(root) if root else Path(settings.data_root)
         for p in ["files", "memory", "logs", "projects"]:
             (self.root / p).mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(self.root / "metadata.db"), check_same_thread=False)
