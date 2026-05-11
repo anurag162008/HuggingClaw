@@ -545,11 +545,43 @@ cat > "$HC_CAPTURE_SCRIPT" << 'PROFILE'
 [ -z "$BASH_VERSION" ] && { return 0 2>/dev/null || exit 0; }
 STARTUP_FILE="/home/node/.openclaw/workspace/startup.sh"
 _hc_append() {
+  [ "${HC_CAPTURE_DISABLED:-0}" = "1" ] && return 0
   local line="$*"
   grep -qxF "$line" "$STARTUP_FILE" 2>/dev/null || {
     echo "$line" >> "$STARTUP_FILE"
     python3 /home/node/app/openclaw-sync.py sync-once >/dev/null 2>&1 &
   }
+}
+
+sudo() {
+  command sudo "$@"
+  local cmd="${1:-}"
+  case "$cmd" in
+    apt-get)
+      if [[ "${2:-}" == "install" ]]; then
+        local pkgs=()
+        for arg in "${@:3}"; do [[ "$arg" != -* ]] && pkgs+=("$arg"); done
+        [[ ${#pkgs[@]} -gt 0 ]] && _hc_append "sudo apt-get install -y ${pkgs[*]}"
+      fi
+      ;;
+    apt)
+      if [[ "${2:-}" == "install" ]]; then
+        local pkgs=()
+        for arg in "${@:3}"; do [[ "$arg" != -* ]] && pkgs+=("$arg"); done
+        [[ ${#pkgs[@]} -gt 0 ]] && _hc_append "sudo apt-get install -y ${pkgs[*]}"
+      fi
+      ;;
+    pip|pip3)
+      if [[ "${2:-}" == "install" ]]; then
+        _hc_append "$cmd install --break-system-packages ${@:3}"
+      fi
+      ;;
+    npm)
+      if [[ "${2:-}" == "install" && "${3:-}" == "-g" ]]; then
+        _hc_append "npm --prefix /home/node/.npm-global install -g ${@:4}"
+      fi
+      ;;
+  esac
 }
 
 apt-get() {
@@ -587,6 +619,24 @@ pip3() {
   fi
 }
 pipx()    { command pipx "$@";    [[ "$1" == "install" ]] && _hc_append "pipx install ${@:2}"; }
+python() {
+  command python "$@"
+  if [[ "${1:-}" == "-m" && "${2:-}" == "pip" && "${3:-}" == "install" ]]; then
+    _hc_append "python -m pip install --break-system-packages ${@:4}"
+  fi
+}
+python3() {
+  command python3 "$@"
+  if [[ "${1:-}" == "-m" && "${2:-}" == "pip" && "${3:-}" == "install" ]]; then
+    _hc_append "python3 -m pip install --break-system-packages ${@:4}"
+  fi
+}
+uv() {
+  command uv "$@"
+  if [[ "${1:-}" == "pip" && "${2:-}" == "install" ]]; then
+    _hc_append "uv pip install ${@:3}"
+  fi
+}
 npm() {
   if [[ "$1" == "install" && "$2" == "-g" ]]; then
     command npm --prefix /home/node/.npm-global "$@"
@@ -642,7 +692,9 @@ if [ ! -f "$STARTUP_FILE" ]; then
 fi
 if [ -s "$STARTUP_FILE" ]; then
   echo "Running workspace/startup.sh..."
+  export HC_CAPTURE_DISABLED=1
   bash -x "$STARTUP_FILE" 2>&1 | tee -a /home/node/.openclaw/startup.log
+  unset HC_CAPTURE_DISABLED
   if [ "${PIPESTATUS[0]}" -ne 0 ]; then
     echo "Warning: startup.sh had errors — check /home/node/.openclaw/startup.log"
   fi
