@@ -553,8 +553,11 @@ _hc_append() {
   }
 }
 
+# ── Capture sudo-driven installs (common in interactive sessions) ──
 sudo() {
   command sudo "$@"
+  local rc=$?
+  [ $rc -eq 0 ] || return $rc
   local cmd="${1:-}"
   case "$cmd" in
     apt-get)
@@ -582,79 +585,107 @@ sudo() {
       fi
       ;;
   esac
+  return $rc
 }
 
+# ── Capture direct apt installs ──
 apt-get() {
   command sudo apt-get "$@"
+  local rc=$?
+  [ $rc -eq 0 ] || return $rc
   if [[ "$1" == "install" ]]; then
     local pkgs=()
     for arg in "${@:2}"; do [[ "$arg" != -* ]] && pkgs+=("$arg"); done
     [[ ${#pkgs[@]} -gt 0 ]] && _hc_append "sudo apt-get install -y ${pkgs[*]}"
   fi
+  return $rc
 }
 apt() {
   command sudo apt "$@"
+  local rc=$?
+  [ $rc -eq 0 ] || return $rc
   if [[ "$1" == "install" ]]; then
     local pkgs=()
     for arg in "${@:2}"; do [[ "$arg" != -* ]] && pkgs+=("$arg"); done
     [[ ${#pkgs[@]} -gt 0 ]] && _hc_append "sudo apt-get install -y ${pkgs[*]}"
   fi
+  return $rc
 }
 
-# ✅ FIXED
+# ── Capture Python package installs (with and without sudo) ──
 pip() {
   if [[ "$1" == "install" ]]; then
     command pip install --break-system-packages "${@:2}"
-    _hc_append "pip install --break-system-packages ${@:2}"
+    local rc=$?
+    [ $rc -eq 0 ] && _hc_append "pip install --break-system-packages ${@:2}"
+    return $rc
   else
     command pip "$@"
+    return $?
   fi
 }
 pip3() {
   if [[ "$1" == "install" ]]; then
     command pip3 install --break-system-packages "${@:2}"
-    _hc_append "pip3 install --break-system-packages ${@:2}"
+    local rc=$?
+    [ $rc -eq 0 ] && _hc_append "pip3 install --break-system-packages ${@:2}"
+    return $rc
   else
     command pip3 "$@"
+    return $?
   fi
 }
-pipx()    { command pipx "$@";    [[ "$1" == "install" ]] && _hc_append "pipx install ${@:2}"; }
+pipx()    { command pipx "$@"; local rc=$?; [ $rc -eq 0 ] && [[ "$1" == "install" ]] && _hc_append "pipx install ${@:2}"; return $rc; }
 python() {
   command python "$@"
+  local rc=$?
+  [ $rc -eq 0 ] || return $rc
   if [[ "${1:-}" == "-m" && "${2:-}" == "pip" && "${3:-}" == "install" ]]; then
     _hc_append "python -m pip install --break-system-packages ${@:4}"
   fi
+  return $rc
 }
 python3() {
   command python3 "$@"
+  local rc=$?
+  [ $rc -eq 0 ] || return $rc
   if [[ "${1:-}" == "-m" && "${2:-}" == "pip" && "${3:-}" == "install" ]]; then
     _hc_append "python3 -m pip install --break-system-packages ${@:4}"
   fi
+  return $rc
 }
 uv() {
   command uv "$@"
+  local rc=$?
+  [ $rc -eq 0 ] || return $rc
   if [[ "${1:-}" == "pip" && "${2:-}" == "install" ]]; then
     _hc_append "uv pip install ${@:3}"
   fi
+  return $rc
 }
+
+# ── Capture JS/global and toolchain package installs ──
 npm() {
   if [[ "$1" == "install" && "$2" == "-g" ]]; then
     command npm --prefix /home/node/.npm-global "$@"
-    _hc_append "npm --prefix /home/node/.npm-global install -g ${@:3}"
+    local rc=$?
+    [ $rc -eq 0 ] && _hc_append "npm --prefix /home/node/.npm-global install -g ${@:3}"
+    return $rc
   else
     command npm "$@"
+    return $?
   fi
 }
-yarn()    { command yarn "$@";    [[ "$1" == "global" && "$2" == "add" ]] && _hc_append "yarn global add ${@:3}"; }
-pnpm()    { command pnpm "$@";    [[ "$1" == "install" && "$2" == "-g" ]] && _hc_append "pnpm install -g ${@:3}"; [[ "$1" == "add" && "$2" == "-g" ]] && _hc_append "pnpm add -g ${@:3}"; }
-brew()    { command brew "$@";    [[ "$1" == "install" ]] && _hc_append "brew install ${@:2}"; }
-gem()     { command gem "$@";     [[ "$1" == "install" ]] && _hc_append "gem install ${@:2}"; }
-cargo()   { command cargo "$@";   [[ "$1" == "install" ]] && _hc_append "cargo install ${@:2}"; }
-go()      { command go "$@";      [[ "$1" == "install" ]] && _hc_append "go install ${@:2}"; }
-snap()    { command snap "$@";    [[ "$1" == "install" ]] && _hc_append "snap install ${@:2}"; }
-conda()   { command conda "$@";   [[ "$1" == "install" ]] && _hc_append "conda install -y ${@:2}"; }
-mamba()   { command mamba "$@";   [[ "$1" == "install" ]] && _hc_append "mamba install -y ${@:2}"; }
-openclaw() { command openclaw "$@"; [[ "$1" == "plugins" && "$2" == "install" ]] && _hc_append "openclaw plugins install ${@:3}"; }
+yarn()    { command yarn "$@"; local rc=$?; [ $rc -eq 0 ] && [[ "$1" == "global" && "$2" == "add" ]] && _hc_append "yarn global add ${@:3}"; return $rc; }
+pnpm()    { command pnpm "$@"; local rc=$?; [ $rc -eq 0 ] && [[ "$1" == "install" && "$2" == "-g" ]] && _hc_append "pnpm install -g ${@:3}"; [ $rc -eq 0 ] && [[ "$1" == "add" && "$2" == "-g" ]] && _hc_append "pnpm add -g ${@:3}"; return $rc; }
+brew()    { command brew "$@"; local rc=$?; [ $rc -eq 0 ] && [[ "$1" == "install" ]] && _hc_append "brew install ${@:2}"; return $rc; }
+gem()     { command gem "$@"; local rc=$?; [ $rc -eq 0 ] && [[ "$1" == "install" ]] && _hc_append "gem install ${@:2}"; return $rc; }
+cargo()   { command cargo "$@"; local rc=$?; [ $rc -eq 0 ] && [[ "$1" == "install" ]] && _hc_append "cargo install ${@:2}"; return $rc; }
+go()      { command go "$@"; local rc=$?; [ $rc -eq 0 ] && [[ "$1" == "install" ]] && _hc_append "go install ${@:2}"; return $rc; }
+snap()    { command snap "$@"; local rc=$?; [ $rc -eq 0 ] && [[ "$1" == "install" ]] && _hc_append "snap install ${@:2}"; return $rc; }
+conda()   { command conda "$@"; local rc=$?; [ $rc -eq 0 ] && [[ "$1" == "install" ]] && _hc_append "conda install -y ${@:2}"; return $rc; }
+mamba()   { command mamba "$@"; local rc=$?; [ $rc -eq 0 ] && [[ "$1" == "install" ]] && _hc_append "mamba install -y ${@:2}"; return $rc; }
+openclaw() { command openclaw "$@"; local rc=$?; [ $rc -eq 0 ] && [[ "$1" == "plugins" && "$2" == "install" ]] && _hc_append "openclaw plugins install ${@:3}"; return $rc; }
 PROFILE
 chmod +x "$HC_CAPTURE_SCRIPT"
 echo "source $HC_CAPTURE_SCRIPT" >> /home/node/.bashrc
@@ -732,6 +763,7 @@ for ((i=0; i<GATEWAY_READY_TIMEOUT; i++)); do
 done
 
 
+# ── Persist runtime WebUI config changes back to gateway config ──
 config_persist_daemon() {
   local last_hash=""
   while true; do

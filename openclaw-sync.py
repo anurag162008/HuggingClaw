@@ -372,6 +372,8 @@ def sync_once(
         return (last_fingerprint or "", last_marker or (0, 0, 0))
 
     # ── Concurrent sync prevention ──
+    # wait_for_lock=True is used for explicit sync-once calls (e.g. shutdown)
+    # so they wait instead of getting skipped during an active periodic sync.
     lock_fd = open(SYNC_LOCK_FILE, "w")
     try:
         if wait_for_lock:
