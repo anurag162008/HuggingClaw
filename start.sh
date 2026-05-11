@@ -550,7 +550,7 @@ _hc_append() {
   }
 }
 
-[ -z "$BASH_VERSION" ] && return 0 2>/dev/null || exit 0
+[ -z "$BASH_VERSION" ] && { return 0 2>/dev/null || exit 0; }
 STARTUP_FILE="/home/node/.openclaw/workspace/startup.sh"
 _hc_append() {
   local line="$*"
