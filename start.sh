@@ -549,16 +549,36 @@ _hc_append() {
     python3 /home/node/app/openclaw-sync.py sync-once >/dev/null 2>&1 &
   }
 }
+
 [ -z "$BASH_VERSION" ] && return 0 2>/dev/null || exit 0
 STARTUP_FILE="/home/node/.openclaw/workspace/startup.sh"
 _hc_append() {
   local line="$*"
-  grep -qxF "$line" "$STARTUP_FILE" 2>/dev/null || echo "$line" >> "$STARTUP_FILE"
+  grep -qxF "$line" "$STARTUP_FILE" 2>/dev/null || {
+    echo "$line" >> "$STARTUP_FILE"
+    python3 /home/node/app/openclaw-sync.py sync-once >/dev/null 2>&1 &
+  }
 }
+
 apt-get() { command sudo apt-get "$@"; [[ "$1" == "install" ]] && _hc_append "sudo apt-get install -y ${@:2}"; }
 apt()     { command sudo apt "$@";     [[ "$1" == "install" ]] && _hc_append "sudo apt-get install -y ${@:2}"; }
-pip()     { command pip "$@";     [[ "$1" == "install" ]] && _hc_append "pip install ${@:2}"; }
-pip3()    { command pip3 "$@";    [[ "$1" == "install" ]] && _hc_append "pip3 install ${@:2}"; }
+# ✅ FIXED
+pip() {
+  if [[ "$1" == "install" ]]; then
+    command pip install --break-system-packages "${@:2}"
+    _hc_append "pip install --break-system-packages ${@:2}"
+  else
+    command pip "$@"
+  fi
+}
+pip3() {
+  if [[ "$1" == "install" ]]; then
+    command pip3 install --break-system-packages "${@:2}"
+    _hc_append "pip3 install --break-system-packages ${@:2}"
+  else
+    command pip3 "$@"
+  fi
+}
 pipx()    { command pipx "$@";    [[ "$1" == "install" ]] && _hc_append "pipx install ${@:2}"; }
 npm() {
   if [[ "$1" == "install" && "$2" == "-g" ]]; then

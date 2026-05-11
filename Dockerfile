@@ -32,7 +32,7 @@ RUN apt-get update && apt-get install -y \
     libx11-6 \
     libxext6 \
     libxfixes3 \
-    libasound2 \
+    libasound2t64 \
     fonts-dejavu-core \
     fonts-liberation \
     fonts-noto-color-emoji \
@@ -90,7 +90,8 @@ ENV HOME=/home/node \
     OPENCLAW_VERSION=${OPENCLAW_VERSION} \
     PATH=/home/node/.npm-global/bin:/home/node/.local/bin:/usr/local/bin:$PATH \
     NODE_PATH=/home/node/browser-deps/node_modules \
-    NODE_OPTIONS="--require /opt/cloudflare-proxy.js"
+    # ✅ FIXED — backslash add karo
+    NODE_OPTIONS="--require /opt/cloudflare-proxy.js" \
     BASH_ENV=/home/node/.openclaw/huggingclaw-capture.sh
 WORKDIR /home/node/app
 
