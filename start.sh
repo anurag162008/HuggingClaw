@@ -541,14 +541,6 @@ STARTUP_FILE="/home/node/.openclaw/workspace/startup.sh"
 HC_CAPTURE_SCRIPT="/home/node/.openclaw/huggingclaw-capture.sh"
 mkdir -p "$(dirname "$HC_CAPTURE_SCRIPT")"
 cat > "$HC_CAPTURE_SCRIPT" << 'PROFILE'
-_hc_append() {
-  local line="$*"
-  grep -qxF "$line" "$STARTUP_FILE" 2>/dev/null || {
-    echo "$line" >> "$STARTUP_FILE"
-    # Background me turant sync karo — package install ke baad immediately save
-    python3 /home/node/app/openclaw-sync.py sync-once >/dev/null 2>&1 &
-  }
-}
 
 [ -z "$BASH_VERSION" ] && { return 0 2>/dev/null || exit 0; }
 STARTUP_FILE="/home/node/.openclaw/workspace/startup.sh"
@@ -560,8 +552,23 @@ _hc_append() {
   }
 }
 
-apt-get() { command sudo apt-get "$@"; [[ "$1" == "install" ]] && _hc_append "sudo apt-get install -y ${@:2}"; }
-apt()     { command sudo apt "$@";     [[ "$1" == "install" ]] && _hc_append "sudo apt-get install -y ${@:2}"; }
+apt-get() {
+  command sudo apt-get "$@"
+  if [[ "$1" == "install" ]]; then
+    local pkgs=()
+    for arg in "${@:2}"; do [[ "$arg" != -* ]] && pkgs+=("$arg"); done
+    [[ ${#pkgs[@]} -gt 0 ]] && _hc_append "sudo apt-get install -y ${pkgs[*]}"
+  fi
+}
+apt() {
+  command sudo apt "$@"
+  if [[ "$1" == "install" ]]; then
+    local pkgs=()
+    for arg in "${@:2}"; do [[ "$arg" != -* ]] && pkgs+=("$arg"); done
+    [[ ${#pkgs[@]} -gt 0 ]] && _hc_append "sudo apt-get install -y ${pkgs[*]}"
+  fi
+}
+
 # ✅ FIXED
 pip() {
   if [[ "$1" == "install" ]]; then
@@ -600,7 +607,7 @@ mamba()   { command mamba "$@";   [[ "$1" == "install" ]] && _hc_append "mamba i
 openclaw() { command openclaw "$@"; [[ "$1" == "plugins" && "$2" == "install" ]] && _hc_append "openclaw plugins install ${@:3}"; }
 PROFILE
 chmod +x "$HC_CAPTURE_SCRIPT"
-echo "source $HC_CAPTURE_SCRIPT" > /home/node/.bashrc
+echo "source $HC_CAPTURE_SCRIPT" >> /home/node/.bashrc
 echo "source $HC_CAPTURE_SCRIPT" >> /home/node/.profile
 echo "[ -f $HC_CAPTURE_SCRIPT ] && source $HC_CAPTURE_SCRIPT" >> /home/node/.bash_profile
 source "$HC_CAPTURE_SCRIPT"
@@ -635,10 +642,11 @@ if [ ! -f "$STARTUP_FILE" ]; then
 fi
 if [ -s "$STARTUP_FILE" ]; then
   echo "Running workspace/startup.sh..."
-  bash -x "$STARTUP_FILE" 2>&1 | tee -a /home/node/.openclaw/startup.log \
-    || echo "Warning: startup.sh had errors — check /home/node/.openclaw/startup.log"
+  bash -x "$STARTUP_FILE" 2>&1 | tee -a /home/node/.openclaw/startup.log
+  if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+    echo "Warning: startup.sh had errors — check /home/node/.openclaw/startup.log"
+  fi
 fi
-
 # ── Launch gateway ──
 echo "Launching OpenClaw gateway on port 7860..."
 
@@ -691,6 +699,7 @@ warmup_browser
 
 # 12. Start Workspace Sync after startup settles
 if [ -n "${HF_TOKEN:-}" ]; then
+  python3 /home/node/app/openclaw-sync.py sync-once || true
   python3 -u /home/node/app/openclaw-sync.py loop &
 fi
 
