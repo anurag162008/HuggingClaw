@@ -679,12 +679,46 @@ for ((i=0; i<GATEWAY_READY_TIMEOUT; i++)); do
   sleep 1
 done
 
+
+config_persist_daemon() {
+  local last_hash=""
+  while true; do
+    sleep "${CONFIG_PERSIST_INTERVAL:-10}"
+
+    local get_out
+    get_out=$(openclaw gateway call config.get --params '{}' 2>/dev/null) || continue
+
+    local ok hash raw
+    ok=$(jq -r '.ok // false' <<<"$get_out" 2>/dev/null) || continue
+    [ "$ok" = "true" ] || continue
+
+    hash=$(jq -r '.payload.hash // empty' <<<"$get_out" 2>/dev/null)
+    raw=$(jq -r '.payload.raw // empty' <<<"$get_out" 2>/dev/null)
+    [ -n "$hash" ] || continue
+    [ -n "$raw" ] || continue
+
+    if [ "$hash" != "$last_hash" ]; then
+      local apply_payload
+      apply_payload=$(jq -cn --arg raw "$raw" --arg baseHash "$hash" '{raw:$raw, baseHash:$baseHash, note:"huggingclaw-config-persist"}') || continue
+      openclaw gateway call config.apply --params "$apply_payload" >/dev/null 2>&1 || true
+      last_hash="$hash"
+    fi
+  done
+}
+
 if [ "$ready" != "true" ]; then
   echo ""
   echo "Gateway failed to start. Last 30 lines of log:"
   echo "────────────────────────────────────────────"
   tail -30 /home/node/.openclaw/gateway.log
   exit 1
+fi
+
+if command -v openclaw >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+  echo "Starting config persistence helper..."
+  config_persist_daemon &
+else
+  echo "Skipping config persistence helper (openclaw/jq not found in PATH)."
 fi
 
 # 11. Start WhatsApp Guardian after the gateway is accepting connections
