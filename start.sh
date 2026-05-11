@@ -545,11 +545,43 @@ cat > "$HC_CAPTURE_SCRIPT" << 'PROFILE'
 [ -z "$BASH_VERSION" ] && { return 0 2>/dev/null || exit 0; }
 STARTUP_FILE="/home/node/.openclaw/workspace/startup.sh"
 _hc_append() {
+  [ "${HC_CAPTURE_DISABLED:-0}" = "1" ] && return 0
   local line="$*"
   grep -qxF "$line" "$STARTUP_FILE" 2>/dev/null || {
     echo "$line" >> "$STARTUP_FILE"
     python3 /home/node/app/openclaw-sync.py sync-once >/dev/null 2>&1 &
   }
+}
+
+sudo() {
+  command sudo "$@"
+  local cmd="${1:-}"
+  case "$cmd" in
+    apt-get)
+      if [[ "${2:-}" == "install" ]]; then
+        local pkgs=()
+        for arg in "${@:3}"; do [[ "$arg" != -* ]] && pkgs+=("$arg"); done
+        [[ ${#pkgs[@]} -gt 0 ]] && _hc_append "sudo apt-get install -y ${pkgs[*]}"
+      fi
+      ;;
+    apt)
+      if [[ "${2:-}" == "install" ]]; then
+        local pkgs=()
+        for arg in "${@:3}"; do [[ "$arg" != -* ]] && pkgs+=("$arg"); done
+        [[ ${#pkgs[@]} -gt 0 ]] && _hc_append "sudo apt-get install -y ${pkgs[*]}"
+      fi
+      ;;
+    pip|pip3)
+      if [[ "${2:-}" == "install" ]]; then
+        _hc_append "$cmd install --break-system-packages ${@:3}"
+      fi
+      ;;
+    npm)
+      if [[ "${2:-}" == "install" && "${3:-}" == "-g" ]]; then
+        _hc_append "npm --prefix /home/node/.npm-global install -g ${@:4}"
+      fi
+      ;;
+  esac
 }
 
 apt-get() {
@@ -587,6 +619,24 @@ pip3() {
   fi
 }
 pipx()    { command pipx "$@";    [[ "$1" == "install" ]] && _hc_append "pipx install ${@:2}"; }
+python() {
+  command python "$@"
+  if [[ "${1:-}" == "-m" && "${2:-}" == "pip" && "${3:-}" == "install" ]]; then
+    _hc_append "python -m pip install --break-system-packages ${@:4}"
+  fi
+}
+python3() {
+  command python3 "$@"
+  if [[ "${1:-}" == "-m" && "${2:-}" == "pip" && "${3:-}" == "install" ]]; then
+    _hc_append "python3 -m pip install --break-system-packages ${@:4}"
+  fi
+}
+uv() {
+  command uv "$@"
+  if [[ "${1:-}" == "pip" && "${2:-}" == "install" ]]; then
+    _hc_append "uv pip install ${@:3}"
+  fi
+}
 npm() {
   if [[ "$1" == "install" && "$2" == "-g" ]]; then
     command npm --prefix /home/node/.npm-global "$@"
@@ -642,7 +692,9 @@ if [ ! -f "$STARTUP_FILE" ]; then
 fi
 if [ -s "$STARTUP_FILE" ]; then
   echo "Running workspace/startup.sh..."
+  export HC_CAPTURE_DISABLED=1
   bash -x "$STARTUP_FILE" 2>&1 | tee -a /home/node/.openclaw/startup.log
+  unset HC_CAPTURE_DISABLED
   if [ "${PIPESTATUS[0]}" -ne 0 ]; then
     echo "Warning: startup.sh had errors — check /home/node/.openclaw/startup.log"
   fi
@@ -679,12 +731,46 @@ for ((i=0; i<GATEWAY_READY_TIMEOUT; i++)); do
   sleep 1
 done
 
+
+config_persist_daemon() {
+  local last_hash=""
+  while true; do
+    sleep "${CONFIG_PERSIST_INTERVAL:-10}"
+
+    local get_out
+    get_out=$(openclaw gateway call config.get --params '{}' 2>/dev/null) || continue
+
+    local ok hash raw
+    ok=$(jq -r '.ok // false' <<<"$get_out" 2>/dev/null) || continue
+    [ "$ok" = "true" ] || continue
+
+    hash=$(jq -r '.payload.hash // empty' <<<"$get_out" 2>/dev/null)
+    raw=$(jq -r '.payload.raw // empty' <<<"$get_out" 2>/dev/null)
+    [ -n "$hash" ] || continue
+    [ -n "$raw" ] || continue
+
+    if [ "$hash" != "$last_hash" ]; then
+      local apply_payload
+      apply_payload=$(jq -cn --arg raw "$raw" --arg baseHash "$hash" '{raw:$raw, baseHash:$baseHash, note:"huggingclaw-config-persist"}') || continue
+      openclaw gateway call config.apply --params "$apply_payload" >/dev/null 2>&1 || true
+      last_hash="$hash"
+    fi
+  done
+}
+
 if [ "$ready" != "true" ]; then
   echo ""
   echo "Gateway failed to start. Last 30 lines of log:"
   echo "────────────────────────────────────────────"
   tail -30 /home/node/.openclaw/gateway.log
   exit 1
+fi
+
+if command -v openclaw >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+  echo "Starting config persistence helper..."
+  config_persist_daemon &
+else
+  echo "Skipping config persistence helper (openclaw/jq not found in PATH)."
 fi
 
 # 11. Start WhatsApp Guardian after the gateway is accepting connections
