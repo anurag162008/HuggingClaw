@@ -7,6 +7,7 @@ credentials inside a private HF dataset without embedding HF tokens in git
 remotes or requiring a manual HF_USERNAME secret.
 """
 
+import fcntl
 import hashlib
 import json
 import logging
@@ -34,10 +35,20 @@ from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError
 logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
 
 OPENCLAW_HOME = Path("/home/node/.openclaw")
+OPENCLAW_CONFIG_FILE = OPENCLAW_HOME / "openclaw.json"
 WORKSPACE = OPENCLAW_HOME / "workspace"
 STATUS_FILE = Path("/tmp/sync-status.json")
+SYNC_LOCK_FILE = Path("/tmp/huggingclaw-sync.lock")
 INTERVAL = int(os.environ.get("SYNC_INTERVAL", "180"))
 INITIAL_DELAY = int(os.environ.get("SYNC_START_DELAY", "10"))
+CONFIG_WATCH_INTERVAL = max(
+    0.5,
+    float(os.environ.get("OPENCLAW_CONFIG_WATCH_INTERVAL", "1")),
+)
+CONFIG_SETTLE_SECONDS = max(
+    0.0,
+    float(os.environ.get("OPENCLAW_CONFIG_SETTLE_SECONDS", "3")),
+)
 HF_TOKEN = os.environ.get("HF_TOKEN", "").strip()
 HF_USERNAME = os.environ.get("HF_USERNAME", "").strip()
 SPACE_AUTHOR_NAME = os.environ.get("SPACE_AUTHOR_NAME", "").strip()
@@ -76,6 +87,13 @@ def write_status(status: str, message: str) -> None:
     tmp_path = STATUS_FILE.with_suffix(".tmp")
     tmp_path.write_text(json.dumps(payload), encoding="utf-8")
     tmp_path.replace(STATUS_FILE)
+
+
+def read_status() -> dict[str, str]:
+    try:
+        return json.loads(STATUS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
 
 def count_files(path: Path) -> int:
@@ -250,6 +268,18 @@ def _should_exclude(rel_posix: str, path: Path) -> bool:
     return False
 
 
+def file_marker(path: Path) -> tuple[int, int, int]:
+    try:
+        stat = path.stat()
+    except OSError:
+        return (0, 0, 0)
+
+    if not path.is_file():
+        return (0, 0, 0)
+
+    return (1, int(stat.st_size), int(stat.st_mtime_ns))
+
+
 def metadata_marker(root: Path) -> tuple[int, int, int]:
     if not root.exists():
         return (0, 0, 0)
@@ -364,7 +394,7 @@ def restore_workspace() -> bool:
         return False
 
 
-def sync_once(
+def _sync_once_unlocked(
     last_fingerprint: str | None = None,
     last_marker: tuple[int, int, int] | None = None,
 ) -> tuple[str, tuple[int, int, int]]:
@@ -412,13 +442,80 @@ def sync_once(
     return (current_fingerprint, current_marker)
 
 
+def sync_once(
+    last_fingerprint: str | None = None,
+    last_marker: tuple[int, int, int] | None = None,
+) -> tuple[str, tuple[int, int, int]]:
+    SYNC_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with SYNC_LOCK_FILE.open("w", encoding="utf-8") as lock_handle:
+        fcntl.flock(lock_handle, fcntl.LOCK_EX)
+        try:
+            return _sync_once_unlocked(last_fingerprint, last_marker)
+        finally:
+            fcntl.flock(lock_handle, fcntl.LOCK_UN)
+
+
 def handle_signal(_sig, _frame) -> None:
     STOP_EVENT.set()
+
+
+def is_valid_json_file(path: Path) -> bool:
+    if not path.exists():
+        return True
+
+    try:
+        json.loads(path.read_text(encoding="utf-8"))
+        return True
+    except Exception:
+        return False
+
+
+def wait_for_config_settle(config_marker: tuple[int, int, int]) -> tuple[str, tuple[int, int, int]]:
+    stable_since = time.monotonic()
+    current_marker = config_marker
+
+    while not STOP_EVENT.is_set():
+        latest_marker = file_marker(OPENCLAW_CONFIG_FILE)
+        if latest_marker != current_marker:
+            current_marker = latest_marker
+            stable_since = time.monotonic()
+
+        if (
+            time.monotonic() - stable_since >= CONFIG_SETTLE_SECONDS
+            and is_valid_json_file(OPENCLAW_CONFIG_FILE)
+        ):
+            return ("settled", current_marker)
+
+        if STOP_EVENT.wait(CONFIG_WATCH_INTERVAL):
+            return ("stopped", current_marker)
+
+    return ("stopped", current_marker)
+
+
+def wait_for_sync_trigger(config_marker: tuple[int, int, int]) -> tuple[str, tuple[int, int, int]]:
+    deadline = time.monotonic() + max(0, INTERVAL)
+
+    while not STOP_EVENT.is_set():
+        current_config_marker = file_marker(OPENCLAW_CONFIG_FILE)
+        if current_config_marker != config_marker:
+            return wait_for_config_settle(current_config_marker)
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return ("interval", current_config_marker)
+
+        wait_seconds = min(CONFIG_WATCH_INTERVAL, remaining)
+        if STOP_EVENT.wait(wait_seconds):
+            return ("stopped", current_config_marker)
+
+    return ("stopped", config_marker)
 
 
 def loop() -> int:
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
+
+    previous_status = read_status().get("status", "")
 
     try:
         repo_id = resolve_backup_namespace()
@@ -431,24 +528,56 @@ def loop() -> int:
     time.sleep(INITIAL_DELAY)
     print(f"Workspace sync started: every {INTERVAL}s -> {repo_id}")
 
-    # Take a fingerprint of the workspace AS RESTORED (after snapshotting state)
-    # so the first loop iteration only uploads if something genuinely changed.
-    # Previously this was None, which forced an unconditional upload every restart
-    # — even when restore had failed silently and the workspace was empty.
+    # Capture the restored dataset state before refreshing the embedded
+    # /home/node/.openclaw backup.  Startup may have patched openclaw.json
+    # after restore (token/model/logging/channel toggles), and that patch only
+    # becomes part of the dataset once snapshot_state_into_workspace() copies it
+    # into workspace/huggingclaw-state/openclaw/.  If the snapshot changes the
+    # workspace, seed the first sync with the pre-snapshot fingerprint so the
+    # updated openclaw.json is uploaded instead of being treated as the baseline.
+    pre_snapshot_fingerprint = fingerprint_dir(WORKSPACE)
+    pre_snapshot_marker = metadata_marker(WORKSPACE)
     snapshot_state_into_workspace()
     last_fingerprint = fingerprint_dir(WORKSPACE)
     last_marker = metadata_marker(WORKSPACE)
-    print("Initial workspace fingerprint captured.")
+
+    if last_fingerprint != pre_snapshot_fingerprint:
+        if previous_status == "error":
+            print(
+                "Initial state snapshot changed, but restore previously failed; "
+                "keeping current state as baseline to avoid overwriting the remote backup."
+            )
+        else:
+            last_fingerprint = pre_snapshot_fingerprint
+            last_marker = pre_snapshot_marker
+            print("Initial state snapshot changed; first sync will upload refreshed OpenClaw state.")
+    else:
+        print("Initial workspace fingerprint captured.")
+
+    config_marker = file_marker(OPENCLAW_CONFIG_FILE)
 
     while not STOP_EVENT.is_set():
         try:
+            sync_started_config_marker = file_marker(OPENCLAW_CONFIG_FILE)
             last_fingerprint, last_marker = sync_once(last_fingerprint, last_marker)
+            config_marker = file_marker(OPENCLAW_CONFIG_FILE)
+
+            if config_marker != sync_started_config_marker:
+                trigger, config_marker = wait_for_config_settle(config_marker)
+                if trigger == "stopped":
+                    break
+                print("OpenClaw config changed during sync; syncing again after it settled.")
+                continue
         except Exception as exc:
             write_status("error", f"Sync failed: {exc}")
             print(f"Workspace sync failed: {exc}")
+            config_marker = file_marker(OPENCLAW_CONFIG_FILE)
 
-        if STOP_EVENT.wait(INTERVAL):
+        trigger, config_marker = wait_for_sync_trigger(config_marker)
+        if trigger == "stopped":
             break
+        if trigger == "settled":
+            print("OpenClaw config changed and settled; syncing immediately.")
 
     return 0
 
@@ -468,6 +597,17 @@ def main() -> int:
         except Exception as exc:
             write_status("error", f"Shutdown sync failed: {exc}")
             print(f"Workspace sync: shutdown sync failed: {exc}")
+            return 1
+    if command == "sync-once-settled":
+        try:
+            trigger, _ = wait_for_config_settle(file_marker(OPENCLAW_CONFIG_FILE))
+            if trigger == "stopped":
+                return 1
+            sync_once()
+            return 0
+        except Exception as exc:
+            write_status("error", f"Settled sync failed: {exc}")
+            print(f"Workspace sync: settled sync failed: {exc}")
             return 1
     if command == "loop":
         return loop()
