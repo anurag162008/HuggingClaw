@@ -542,8 +542,11 @@ graceful_shutdown() {
   echo "Shutting down..."
   if [ -f "/home/node/app/openclaw-sync.py" ]; then
     echo "Saving state before exit..."
+    python3 /home/node/app/openclaw-sync.py sync-once-settled || \
+      echo "Warning: could not complete settled shutdown sync"
+    sleep 1
     python3 /home/node/app/openclaw-sync.py sync-once || \
-      echo "Warning: could not complete shutdown sync"
+      echo "Warning: could not complete final shutdown sync"
   fi
   kill $(jobs -p) 2>/dev/null
   exit 0
