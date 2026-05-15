@@ -176,6 +176,26 @@ HuggingClaw automatically syncs your workspace (chats, settings, sessions) to a 
 | `OPENCLAW_CONFIG_WATCH_INTERVAL` | `1` | How often to check `openclaw.json` for immediate settings sync |
 | `OPENCLAW_CONFIG_SETTLE_SECONDS` | `3` | How long `openclaw.json` must stay valid and unchanged before syncing |
 
+
+## 🧪 Jupyter DevData Backup *(Optional, separate dataset)*
+
+When `DEV_MODE=true`, you can optionally back up Jupyter work data to a **separate** HF dataset (different from `huggingclaw-backup`).
+
+Activation rules:
+- `DEV_MODE=true`
+- `HF_TOKEN` present
+- `DEVDATA` is not `off/false/0/no`
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `DEVDATA` | `on` | Enable/disable Jupyter devdata sync (`off`/`false` disables) |
+| `DEVDATA_DATASET_NAME` | `huggingclaw-devdata` | Separate HF dataset name for Jupyter dev data |
+| `DEVDATA_SYNC_INTERVAL` | `300` | Sync interval (seconds) for Jupyter devdata |
+
+Notes:
+- This is separate from `BACKUP_DATASET_NAME` (`huggingclaw-backup`).
+- If `CLOUDFLARE_PROXY_URL` is missing/invalid, Telegram falls back to direct `https://api.telegram.org`.
+
 ## 📦 Ephemeral Package Re-install *(Optional)*
 
 Yes — you can use extra packages after a Space restart without storing package files. The easiest option is to remember **one variable**:
