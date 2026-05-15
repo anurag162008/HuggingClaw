@@ -20,6 +20,7 @@ GATEWAY_TOKEN="$(trim_var "${GATEWAY_TOKEN:-}")"
 SPACE_HOST="$(trim_var "${SPACE_HOST:-}")"
 OPENCLAW_PASSWORD="$(trim_var "${OPENCLAW_PASSWORD:-}")"
 LLM_API_KEY="$(trim_var "${LLM_API_KEY:-}")"
+CLOUDFLARE_PROXY_URL="$(trim_var "${CLOUDFLARE_PROXY_URL:-}")"
 
 OPENCLAW_VERSION="${OPENCLAW_VERSION:-latest}"
 OPENCLAW_APP_DIR="/home/node/.openclaw/openclaw-app"
@@ -42,6 +43,12 @@ case "$DEV_MODE_NORMALIZED" in
   *) DEV_MODE_ENABLED=false ;;
 esac
 SYNC_INTERVAL="${SYNC_INTERVAL:-180}"
+DEVDATA_RAW="${DEVDATA:-on}"
+DEVDATA_NORMALIZED=$(printf '%s' "$DEVDATA_RAW" | tr '[:upper:]' '[:lower:]')
+DEVDATA_ENABLED=true
+case "$DEVDATA_NORMALIZED" in
+  off|false|0|no) DEVDATA_ENABLED=false ;;
+esac
 if [ -n "${SPACE_HOST:-}" ]; then
   OPENCLAW_CONSOLE_LOG_LEVEL="${OPENCLAW_CONSOLE_LOG_LEVEL:-warn}"
   OPENCLAW_FILE_LOG_LEVEL="${OPENCLAW_FILE_LOG_LEVEL:-info}"
@@ -537,6 +544,24 @@ if [ -n "${ALLOWED_ORIGINS:-}" ]; then
   CONFIG_JSON=$(echo "$CONFIG_JSON" | jq ".gateway.controlUi.allowedOrigins += $ORIGINS_JSON | .gateway.controlUi.allowedOrigins |= unique")
 fi
 
+resolve_telegram_api_root() {
+  local candidate="$(trim_var "${CLOUDFLARE_PROXY_URL:-}")"
+  if [ -n "$candidate" ]; then
+    case "$candidate" in
+      http://*|https://*)
+        printf '%s' "$candidate"
+        return 0
+        ;;
+      *)
+        echo "Warning: invalid CLOUDFLARE_PROXY_URL '$candidate' (must start with http:// or https://); falling back to direct Telegram API." >&2
+        ;;
+    esac
+  fi
+  printf '%s' "https://api.telegram.org"
+}
+TELEGRAM_API_ROOT="$(resolve_telegram_api_root)"
+
+
 # Telegram (supports multiple user IDs, comma-separated)
 if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
   CONFIG_JSON=$(echo "$CONFIG_JSON" | jq '.plugins.entries.telegram = {"enabled": true}')
@@ -549,12 +574,12 @@ if [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
   # Force ipv4 for Telegram specifically as HF IPv6 often times out
   export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--dns-result-order=ipv4first"
   
-  CONFIG_JSON=$(echo "$CONFIG_JSON" | jq --arg token "$CLEAN_TG_TOKEN" --arg proxy_url "${CLOUDFLARE_PROXY_URL:-}" '
+  CONFIG_JSON=$(echo "$CONFIG_JSON" | jq --arg token "$CLEAN_TG_TOKEN" --arg proxy_url "$TELEGRAM_API_ROOT" '
     .channels.telegram.enabled = true
     | .channels.telegram.botToken = $token
     | .channels.telegram.commands.native = false
     | .channels.telegram.timeoutSeconds = 60
-    | (if $proxy_url != "" then .channels.telegram.apiRoot = $proxy_url else .channels.telegram.apiRoot = "https://api.telegram.org" end)
+    | (if $proxy_url != "" then .channels.telegram.apiRoot = $proxy_url else . end)
     | .channels.telegram.retry = {
         "attempts": 5,
         "minDelayMs": 800,
@@ -779,6 +804,7 @@ if [ "$RUNTIME_JUPYTER_ENABLED" = "true" ]; then
       --IdentityProvider.token="$JUPYTER_TOKEN" \
       --ServerApp.base_url=/terminal/ \
       --ServerApp.terminals_enabled=True \
+      --ServerApp.terminado_settings='{"shell_command":["/bin/bash","-i"]}' \
       --ServerApp.allow_origin='*' \
       --ServerApp.allow_remote_access=True \
       --ServerApp.trust_xheaders=True \
@@ -1304,6 +1330,27 @@ sync_before_gateway_restart() {
     echo "Warning: could not sync settled state before gateway restart"
 }
 
+start_background_devdata_sync() {
+  if [ "$DEV_MODE_ENABLED" != "true" ]; then
+    return 0
+  fi
+  if [ "$DEVDATA_ENABLED" != "true" ]; then
+    echo "DevData  : disabled by DEVDATA=${DEVDATA_RAW}"
+    return 0
+  fi
+  if [ -z "${HF_TOKEN:-}" ]; then
+    echo "DevData  : disabled (HF_TOKEN missing)"
+    return 0
+  fi
+  if [ ! -f "/home/node/app/jupyter-devdata-sync.py" ]; then
+    echo "DevData  : script missing; skipped"
+    return 0
+  fi
+  echo "DevData  : enabled (dataset=${DEVDATA_DATASET_NAME:-huggingclaw-devdata})"
+  python3 -u /home/node/app/jupyter-devdata-sync.py &
+  DEVDATA_SYNC_PID=$!
+}
+
 start_background_sync_once() {
   [ -n "${HF_TOKEN:-}" ] || return 0
 
@@ -1377,6 +1424,7 @@ while true; do
   # config edits can make OpenClaw exit/reload, and the gateway loop below will
   # relaunch it without rerunning all startup code.
   start_background_sync_once
+  start_background_devdata_sync
 
   set +e
   wait "$GATEWAY_PID"
