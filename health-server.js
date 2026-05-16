@@ -37,6 +37,21 @@ const DEVDATA_SEPARATE_DATASET = DEVDATA_DATASET_NAME !== BACKUP_DATASET_NAME;
 const DEVDATA_ENABLED = JUPYTER_ENABLED && HF_BACKUP_ENABLED && DEVDATA_SEPARATE_DATASET && !/^(off|false|0|no)$/i.test((process.env.DEVDATA || "on").trim());
 const APP_BASE = normalizeBase(process.env.APP_BASE, "/app");
 const SYNC_STATUS_FILE = "/tmp/sync-status.json";
+
+// ── Private Space redirect support ──
+// HF automatically sets SPACE_ID as "username/spacename" in every Space container.
+const SPACE_ID = (process.env.SPACE_ID || "").trim();
+function deriveHfSpaceUrl() {
+  if (SPACE_ID) return `https://huggingface.co/spaces/${SPACE_ID}`;
+  const host = (process.env.SPACE_HOST || "").replace(/\.hf\.space$/i, "");
+  const author = (process.env.SPACE_AUTHOR_NAME || "").trim().toLowerCase();
+  if (author && host.toLowerCase().startsWith(author + "-")) {
+    const spaceName = host.slice(author.length + 1);
+    return `https://huggingface.co/spaces/${process.env.SPACE_AUTHOR_NAME}/${spaceName}`;
+  }
+  return "";
+}
+const HF_SPACE_URL = deriveHfSpaceUrl();
 const CLOUDFLARE_KEEPALIVE_STATUS_FILE =
   "/tmp/huggingclaw-cloudflare-keepalive-status.json";
 
@@ -176,12 +191,24 @@ function renderDashboard(data) {
     <a class="hero-action env" data-space-link="env-builder" href="/env-builder">⚙️ Env Builder →</a>
   </div>
   <section class="overview">${tilesHtml}</section>
-  <footer>Built by <a href="https://github.com/somratpro" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:none">@somratpro</a>${JUPYTER_ENABLED ? " · Terminal by JupyterLab" : ""}<br><span>Public Spaces can be opened directly via <code>.hf.space</code>; private Spaces require the App tab session.</span></footer>
+  <footer>Built by <a href="https://github.com/somratpro" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:none">@somratpro</a>${JUPYTER_ENABLED ? " · Terminal by JupyterLab" : ""}<br><span>Public Spaces open via <code>.hf.space</code> directly. Private Spaces require the <a href="${HF_SPACE_URL || "#"}" target="_blank" rel="noopener noreferrer" style="color:inherit">Hugging Face App tab</a> for the authenticated session${HF_SPACE_URL ? ` — or share <code>huggingface.co/spaces/${SPACE_ID}</code>` : ""}.</span></footer>
   </main>
   <script>
   document.querySelectorAll('.local-time').forEach(el=>{const d=new Date(el.getAttribute('data-iso'));if(!isNaN(d))el.textContent='At '+d.toLocaleTimeString()});
   const inEmbeddedApp = (() => { try { return window.top !== window.self; } catch { return true; } })();
   const isDirectHfSpaceHost = /\.hf\.space$/i.test(window.location.hostname);
+  const HF_SPACE_URL = ${JSON.stringify(HF_SPACE_URL)};
+  // ── Private Space Guard ──
+  // Direct .hf.space access outside the HF App iframe has no valid session cookie
+  // for private spaces — HF CDN returns 404 before the request reaches the container.
+  // Redirect users to huggingface.co/spaces/... which authenticates them properly.
+  if (isDirectHfSpaceHost && !inEmbeddedApp && HF_SPACE_URL) {
+    const notice = document.createElement('div');
+    notice.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#08080f;color:#f6f4ff;font-family:sans-serif;flex-direction:column;gap:16px;z-index:9999';
+    notice.innerHTML = '<span style="font-size:1.1rem">🔒 Private Space &mdash; Redirecting&hellip;</span><a href="' + HF_SPACE_URL + '" style="color:#a5b4fc;font-size:.85rem">Click here if not redirected</a>';
+    document.body.appendChild(notice);
+    setTimeout(() => { window.location.replace(HF_SPACE_URL); }, 300);
+  }
   // If inside the HF App iframe, force new-tab navigation so users can break out
   // to the standalone Space host. Also keep direct .hf.space behavior opening new tabs.
   const openInNewTab = inEmbeddedApp || isDirectHfSpaceHost;
@@ -195,6 +222,39 @@ function renderDashboard(data) {
     }
   });
 </script>
+</body></html>`;
+}
+
+function renderPrivateRedirect(targetUrl) {
+  const safeUrl = escapeHtml(targetUrl);
+  return `<!doctype html><html lang="en"><head>
+  <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <meta http-equiv="refresh" content="3;url=${safeUrl}"/>
+  <title>HuggingClaw — Private Space</title>
+  <style>
+    :root{color-scheme:dark}
+    body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+         font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;
+         background:#08080f;color:#f6f4ff;text-align:center;padding:24px}
+    .card{border:1px solid #26243a;background:#12111b;border-radius:14px;padding:36px 32px;max-width:440px}
+    h1{margin:0 0 12px;font-size:1.5rem}
+    p{color:#b8b3d7;line-height:1.6;margin:0 0 24px}
+    .btn{display:inline-flex;align-items:center;justify-content:center;
+         background:#fff;color:#000;font-weight:850;font-size:.95rem;
+         border-radius:8px;padding:12px 28px;text-decoration:none;transition:opacity .15s}
+    .btn:hover{opacity:.85}
+    .sub{color:#7f7a9e;font-size:.78rem;margin-top:16px}
+  </style></head><body>
+  <div class="card">
+    <h1>🔒 Private Space</h1>
+    <p>This HuggingFace Space is private. You need to be logged in to <strong>huggingface.co</strong> to access it.<br><br>Redirecting you now&hellip;</p>
+    <a class="btn" href="${safeUrl}">Open on Hugging Face →</a>
+    <div class="sub">Redirecting in 3 seconds&hellip;</div>
+  </div>
+  <script>
+    // Immediate redirect if JS available — don't wait for meta refresh
+    setTimeout(() => { window.location.replace(${JSON.stringify(targetUrl)}); }, 100);
+  </script>
 </body></html>`;
 }
 
@@ -306,6 +366,17 @@ const server = http.createServer(async (req, res) => {
     ]);
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify({ model: LLM_MODEL, uptime: formatUptime(Date.now() - startTime), gatewayReady, jupyterReady, sync: getSyncStatus(), whatsapp: readGuardianStatus(), keepalive: getKeepaliveStatus() }));
+  }
+
+  // Private space redirect — send users to the authenticated HF Spaces page.
+  // Works for both direct .hf.space links AND programmatic shares.
+  if (pathname === "/hf-redirect" || pathname === "/hf-redirect/") {
+    if (HF_SPACE_URL) {
+      res.writeHead(302, { Location: HF_SPACE_URL, "Cache-Control": "no-store" });
+      return res.end();
+    }
+    res.writeHead(404, { "Content-Type": "text/plain" });
+    return res.end("SPACE_ID not configured.");
   }
 
   if (pathname === "/env-builder" || pathname === "/env-builder/") {
